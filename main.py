@@ -47,12 +47,14 @@ TEAMS_SELECTORS: dict[str, list[tuple[str, str]]] = {
         (By.CSS_SELECTOR, "input[aria-label*='name' i]"),
     ],
     "camera_toggle": [
+        (By.CSS_SELECTOR, "input[data-tid='toggle-video']"),
         (By.CSS_SELECTOR, "button[data-tid='toggle-video']"),
         (By.CSS_SELECTOR, "div[data-tid='toggle-video']"),
         (By.CSS_SELECTOR, "button[aria-label*='Camera' i]"),
         (By.CSS_SELECTOR, "input[type='checkbox'][aria-label*='Camera' i]"),
     ],
     "mic_toggle": [
+        (By.CSS_SELECTOR, "input[data-tid='toggle-mute']"),
         (By.CSS_SELECTOR, "button[data-tid='toggle-mute']"),
         (By.CSS_SELECTOR, "div[data-tid='toggle-mute']"),
         (By.CSS_SELECTOR, "button[aria-label*='Mic' i]"),
@@ -78,7 +80,12 @@ class Config:
     username: str
     duration_minutes: int
     headless: bool
+    keep_audio_on: bool = True
     end_date: date | None = None
+
+
+def _parse_bool(raw: str) -> bool:
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def load_config() -> Config:
@@ -88,7 +95,8 @@ def load_config() -> Config:
     meet_url = os.getenv("MEET_URL", "").strip()
     username = os.getenv("MEET_USERNAME", "").strip()
     duration_raw = os.getenv("DURATION_MINUTES", "100").strip()
-    headless_raw = os.getenv("HEADLESS", "false").strip().lower()
+    headless_raw = os.getenv("HEADLESS", "false")
+    keep_audio_raw = os.getenv("KEEP_AUDIO_ON", "true")
     end_date_raw = os.getenv("END_DATE", "").strip()
 
     if not meet_url:
@@ -111,23 +119,23 @@ def load_config() -> Config:
         except ValueError as exc:
             raise ValueError(f"END_DATE harus berformat YYYY-MM-DD: {end_date_raw}") from exc
 
-    headless = headless_raw in {"1", "true", "yes", "on"}
     return Config(
         meet_url=meet_url,
         username=username,
         duration_minutes=duration_minutes,
-        headless=headless,
+        headless=_parse_bool(headless_raw),
+        keep_audio_on=_parse_bool(keep_audio_raw),
         end_date=end_date,
     )
 
 
-def create_driver(headless: bool) -> webdriver.Chrome:
-    """Inisialisasi Chrome WebDriver dengan blokir kamera, mic, dan notifikasi."""
+def create_driver(headless: bool, keep_audio_on: bool = True) -> webdriver.Chrome:
+    """Inisialisasi Chrome WebDriver dengan kontrol izin media dan notifikasi."""
     options = Options()
-    # Blokir izin kamera, mikrofon, dan notifikasi di level browser (2 = Block).
+    media_setting = 1 if keep_audio_on else 2
     prefs = {
-        "profile.default_content_setting_values.media_stream_mic": 2,
-        "profile.default_content_setting_values.media_stream_camera": 2,
+        "profile.default_content_setting_values.media_stream_mic": media_setting,
+        "profile.default_content_setting_values.media_stream_camera": media_setting,
         "profile.default_content_setting_values.notifications": 2,
     }
     options.add_experimental_option("prefs", prefs)
@@ -135,6 +143,12 @@ def create_driver(headless: bool) -> webdriver.Chrome:
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-blink-features=AutomationControlled")
+
+    if keep_audio_on:
+        # Otomatis izinkan prompt browser & pakai virtual device senyap agar
+        # audio meeting tetap aktif (termasuk di headless/Docker) tanpa bocor suara mic.
+        options.add_argument("--use-fake-ui-for-media-stream")
+        options.add_argument("--use-fake-device-for-media-stream")
 
     chrome_binary = os.getenv("CHROME_BINARY", "").strip()
     if chrome_binary:
@@ -159,9 +173,15 @@ def find_first_element(
     locators: list[tuple[str, str]],
     timeout: float = 10.0,
     clickable: bool = False,
+    present_only: bool = False,
 ) -> WebElement | None:
     """Mencari elemen pertama yang cocok dari daftar kandidat selector."""
-    condition = EC.element_to_be_clickable if clickable else EC.visibility_of_element_located
+    if present_only:
+        condition = EC.presence_of_element_located
+    elif clickable:
+        condition = EC.element_to_be_clickable
+    else:
+        condition = EC.visibility_of_element_located
     per_locator_timeout = max(1.5, timeout / max(len(locators), 1))
 
     for by, value in locators:
@@ -212,17 +232,30 @@ def fill_username(driver: webdriver.Chrome, username: str) -> bool:
 
 
 def _is_toggle_on(element: WebElement) -> bool | None:
-    """Membaca status toggle (ON/OFF) dari atribut ARIA umum."""
+    """Membaca status toggle (ON/OFF) dari title, ARIA, data-cid, atau checkbox."""
+    for attr in ("title", "aria-label"):
+        text = (element.get_attribute(attr) or "").lower()
+        if not text:
+            continue
+        if "turn off" in text or ("mute" in text and "unmute" not in text):
+            return True
+        if "turn on" in text or "unmute" in text:
+            return False
+
+    data_cid = (element.get_attribute("data-cid") or "").lower()
+    if data_cid.endswith("-true"):
+        return True
+    if data_cid.endswith("-false"):
+        return False
+
     for attr in ("aria-checked", "aria-pressed"):
         val = element.get_attribute(attr)
         if val is not None:
             return val.lower() == "true"
 
-    label = (element.get_attribute("aria-label") or "").lower()
-    if "turn off" in label or "mute" in label and "unmute" not in label:
-        return True
-    if "turn on" in label or "unmute" in label:
-        return False
+    if element.tag_name.lower() == "input" and (element.get_attribute("type") or "").lower() == "checkbox":
+        return element.is_selected()
+
     return None
 
 
@@ -232,19 +265,22 @@ def _ensure_toggle_off(
     locators: list[tuple[str, str]],
 ) -> None:
     """Memastikan toggle media (kamera/mic) dalam posisi mati."""
-    toggle = find_first_element(driver, locators, timeout=8.0, clickable=True)
+    toggle = find_first_element(driver, locators, timeout=8.0, present_only=True)
     if not toggle:
         logger.warning("Toggle %s tidak ditemukan (mungkin sudah terblokir oleh browser).", label)
         return
 
     state = _is_toggle_on(toggle)
     if state is True:
-        toggle.click()
+        try:
+            toggle.click()
+        except WebDriverException:
+            driver.execute_script("arguments[0].click();", toggle)
         logger.info("%s dimatikan melalui UI pre-join.", label)
     elif state is False:
         logger.info("%s sudah dalam posisi mati.", label)
     else:
-        logger.info("Status %s tidak terbaca jelas dari atribut ARIA; tidak diklik otomatis.", label)
+        logger.info("Status %s tidak terbaca jelas; tidak diklik otomatis.", label)
 
 
 def ensure_media_off(driver: webdriver.Chrome) -> None:
@@ -331,8 +367,12 @@ def main() -> int:
         logger.info("Periode kegiatan sudah berakhir (%s). Melewati eksekusi.", config.end_date)
         return 0
 
-    logger.info("Menyiapkan Chrome WebDriver (headless=%s)...", config.headless)
-    driver = create_driver(config.headless)
+    logger.info(
+        "Menyiapkan Chrome WebDriver (headless=%s, keep_audio_on=%s)...",
+        config.headless,
+        config.keep_audio_on,
+    )
+    driver = create_driver(config.headless, config.keep_audio_on)
 
     try:
         logger.info("Membuka link meeting...")
