@@ -1,0 +1,9 @@
+[Unit]
+Description=Automasi Join Microsoft Teams (Selenium)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/azhar-fakhri/Documents/python/automasi meet aws
+Environment=PYTHONUNBUFFERED=1
+ExecStart="/home/azhar-fakhri/Documents/python/automasi meet aws/.venv/bin/python" "/home/azhar-fakhri/Documents/python/automasi meet aws/main.py"

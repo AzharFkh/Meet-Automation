@@ -1,0 +1,9 @@
+[Unit]
+Description=Jalankan Automasi Teams Senin-Jumat jam 18:55
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 18:55:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target

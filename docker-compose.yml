@@ -1,0 +1,11 @@
+services:
+  teams-bot:
+    build: .
+    container_name: teams-automation
+    env_file:
+      - .env
+    environment:
+      - HEADLESS=true
+      - TZ=Asia/Jakarta
+    shm_size: "1gb"
+    restart: "no"
