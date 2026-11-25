@@ -78,7 +78,9 @@ jobs:
     name: Deploy to Server
     runs-on: ubuntu-latest
     needs: publish
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Dinonaktifkan sementara; aktifkan lagi dengan kondisi di bawah jika sudah siap auto-deploy:
+    # if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: false
     timeout-minutes: 10
 
     steps:
