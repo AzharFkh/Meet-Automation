@@ -1,5 +1,6 @@
 services:
   teams-bot:
+    image: ghcr.io/azharfkh/meet-automation:${IMAGE_TAG:-latest}
     build: .
     container_name: teams-automation
     env_file:

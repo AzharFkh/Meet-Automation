@@ -19,10 +19,13 @@ def create_driver(headless: bool, keep_audio_on: bool = True) -> webdriver.Chrom
         "profile.default_content_setting_values.notifications": 2,
     }
     options.add_experimental_option("prefs", prefs)
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option("useAutomationExtension", False)
     options.add_argument("--disable-notifications")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--autoplay-policy=no-user-gesture-required")
 
     if keep_audio_on:
         # Otomatis izinkan prompt browser & pakai virtual device senyap agar
